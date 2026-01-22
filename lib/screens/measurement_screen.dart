@@ -7,6 +7,7 @@ import 'dart:math' as math;
 import '../models/measurement_model.dart';
 import '../services/ar_service.dart';
 import '../widgets/measurement_overlay.dart';
+import '../widgets/coordinate_smoother.dart';
 
 class MeasurementScreen extends StatefulWidget {
   const MeasurementScreen({super.key});
@@ -31,6 +32,11 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
   
   // Timer for continuous distance updates
   Stream<void>? _trackingStream;
+
+  // Smoothing for projected lines
+  final Map<String, CoordinateSmoother> _lineSmoothers = {};
+  CoordinateSmoother? _pendingStartSmoother;
+  CoordinateSmoother? _pendingEndSmoother;
 
   @override
   void initState() {
@@ -103,30 +109,23 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
   }
 
   void _startContinuousTracking() {
-    // Update projections and distance 30 times per second
-    _trackingStream = Stream.periodic(const Duration(milliseconds: 33), (_) {});
+    // Update projections and distance at 60fps for smoother rotation tracking
+    _trackingStream = Stream.periodic(const Duration(milliseconds: 16), (_) {});
     _trackingStream!.listen((_) async {
       if (_arService == null || _arKitController == null) return;
 
-      // 1. Check for surface at center and Update live distance if measuring
-      // Use smoothed position for live tracking to reduce jitter
+      // 1. Get smoothed position for real-time tracking (3D space)
       final worldPos = await _arService!.getSmoothedWorldPosition(0.5, 0.5);
       final hasSurface = worldPos != null;
 
-      if (_arService?.isWaitingForSecondPoint == true) {
-        // Use regular getWorldPosition for distance calculation (accuracy) 
-        // but can use smoothed for live distance display to reduce flickering numbers
-        final distancePos = await _arService!.getWorldPosition(0.5, 0.5);
-        if (distancePos != null && _arService!.firstPendingPoint != null) {
-          final distance = (distancePos - _arService!.firstPendingPoint!.position).length;
-          _onLiveDistanceUpdate(distance);
-        }
+      if (_arService?.isWaitingForSecondPoint == true && worldPos != null) {
+        // Use the same smoothed position for live distance to keep numbers stable
+        final distance = (worldPos - _arService!.firstPendingPoint!.position).length;
+        _onLiveDistanceUpdate(distance);
       }
 
-      // 2. Project all existing measurements to screen space in parallel
+      // 2. Project existing measurements
       final List<ProjectedLine> newProjectedLines = [];
-
-      // Create list of futures for parallel processing
       final List<Future<List<ProjectedLine>>> projectionFutures = _session.measurements.map((measurement) async {
         final List<ProjectedLine> measurementLines = [];
         
@@ -134,45 +133,41 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
         final end = await _arService!.projectPoint(measurement.endPoint.position);
 
         if (start != null && end != null) {
-          // Add main direct line only
           measurementLines.add(ProjectedLine(
             start: start,
             end: end,
             label: measurement.getFormattedDistance(metric: _isMetric),
           ));
         }
-        
         return measurementLines;
       }).toList();
 
-      // 3. Project currently pending line if exists
+      // 3. Project currently pending line
       if (_arService!.isWaitingForSecondPoint && _arService!.firstPendingPoint != null) {
         projectionFutures.add(() async {
           final List<ProjectedLine> pendingLines = [];
           final startPos = _arService!.firstPendingPoint!.position;
           
-          // Get the current detected surface position at crosshair
-          final currentWorldPos = await _arService!.getWorldPosition(0.5, 0.5);
+          // Project the start point from 3D to 2D
+          final startScreen = await _arService!.projectPoint(startPos);
           
-          if (currentWorldPos != null) {
-            // Project both points for the direct line
-            final startScreen = await _arService!.projectPoint(startPos);
-            final currentScreenPos = await _arService!.projectPoint(currentWorldPos);
+          if (startScreen != null) {
+            // CRITICAL FIX: Anchor the "end" of the live line to EXACT screen center
+            // This eliminates crosshair drift and rotation lag for the active line
+            final screenSize = MediaQuery.of(context).size;
+            final center = Offset(screenSize.width / 2, screenSize.height / 2);
             
-            if (startScreen != null && currentScreenPos != null) {
-              // 1. Direct line - show only this while pulling
-              pendingLines.add(ProjectedLine(
-                start: startScreen,
-                end: currentScreenPos,
-                label: '', // Main distance shown in status text at top
-              ));
-            }
+            pendingLines.add(ProjectedLine(
+              start: startScreen,
+              end: center,
+              label: '',
+            ));
           }
           return pendingLines;
         }());
       }
 
-      // Wait for all projections simultaneously to reduce lag/drift
+      // Wait for all projections
       final results = await Future.wait(projectionFutures);
       for (final lineList in results) {
         newProjectedLines.addAll(lineList);
@@ -248,18 +243,15 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
   Future<void> _capturePoint() async {
     if (_arService == null) return;
 
-    // Use center of screen (0.5, 0.5)
-    final position = await _arService!.getWorldPosition(0.5, 0.5);
+    // Use smoothed position for final capture for maximum stability
+    final position = await _arService!.getSmoothedWorldPosition(0.5, 0.5);
     if (position != null) {
       _arService!.resetSmoothing(); // Reset for next measurement
-      
-      // Check if this will be the first point (before adding)
-      final isFirstPoint = !_arService!.isWaitingForSecondPoint;
       
       // Add the point to the service
       _arService!.addPointFromVector(position);
 
-      // Update status based on state AFTER adding point
+      // Update status based on state
       if (_arService!.isWaitingForSecondPoint) {
         setState(() {
           _statusText = 'Move to end point';

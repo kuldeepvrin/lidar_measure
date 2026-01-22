@@ -148,38 +148,41 @@ class ARMeasurementService {
     }
   }
 
-  // Last detected position for smoothing
-  vm.Vector3? _lastLivePosition;
-  static const double _smoothingFactor = 0.35; // Lower = smoother but more lag
+  // Buffer for rolling average smoothing
+  final List<vm.Vector3> _hitBuffer = [];
+  static const int _maxBufferSize = 5; 
 
   /// Get smoothed hit result for live tracking
-  /// CRITICAL: Returns null if no surface is currently detected to prevent false positives
+  /// Uses rolling average of recent hits to eliminate depth flicker
   Future<vm.Vector3?> getSmoothedWorldPosition(double x, double y) async {
     final newPos = await getWorldPosition(x, y);
     
-    // CHANGED: If no surface detected NOW, return null immediately
-    // This prevents showing green crosshair when there's no actual surface
     if (newPos == null) {
-      _lastLivePosition = null; // Reset smoothing on loss of tracking
-      return null;
+      if (_hitBuffer.isEmpty) return null;
+      // If we lose tracking briefly, return the last stable average
+      return _calculateAverage(_hitBuffer);
     }
 
-    if (_lastLivePosition == null) {
-      _lastLivePosition = newPos;
-    } else {
-      // Linear interpolation (lerp) for smoothing
-      _lastLivePosition = vm.Vector3(
-        _lastLivePosition!.x + (newPos.x - _lastLivePosition!.x) * _smoothingFactor,
-        _lastLivePosition!.y + (newPos.y - _lastLivePosition!.y) * _smoothingFactor,
-        _lastLivePosition!.z + (newPos.z - _lastLivePosition!.z) * _smoothingFactor,
-      );
+    _hitBuffer.add(newPos);
+    if (_hitBuffer.length > _maxBufferSize) {
+      _hitBuffer.removeAt(0);
     }
-    return _lastLivePosition;
+
+    return _calculateAverage(_hitBuffer);
   }
 
-  /// Reset smoothing state (call when starting a new measurement)
+  vm.Vector3 _calculateAverage(List<vm.Vector3> points) {
+    if (points.isEmpty) return vm.Vector3.zero();
+    final sum = vm.Vector3.zero();
+    for (final p in points) {
+      sum.add(p);
+    }
+    return sum / points.length.toDouble();
+  }
+
+  /// Reset smoothing state
   void resetSmoothing() {
-    _lastLivePosition = null;
+    _hitBuffer.clear();
   }
 
   /// Calculate live distance from first point to current position
