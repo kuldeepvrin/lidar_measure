@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:arkit_plugin/arkit_plugin.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
-import 'dart:math' as math;
 import '../models/measurement_model.dart';
 
 /// Service to manage ARKit session and handle LiDAR measurements
@@ -24,30 +23,17 @@ class ARMeasurementService {
     // Tap handler disabled - using plus button for point capture
   }
 
-  /// Handle tap on AR view to place measurement points
-  void _handleARTap(List<ARKitTestResult> results) {
-    if (results.isEmpty) {
-      onError?.call('No surface detected. Try pointing at a flat surface.');
-      return;
-    }
 
-    // Get the first hit result
-    final hit = results.first;
-    final position = vm.Vector3(
-      hit.worldTransform.getColumn(3).x,
-      hit.worldTransform.getColumn(3).y,
-      hit.worldTransform.getColumn(3).z,
-    );
-
-    addPointFromVector(position);
-  }
 
   /// Add a measurement point from a 3D vector position
   void addPointFromVector(vm.Vector3 position) {
     // Create a measurement point from the position
+    // Note: We store the 3D position directly. The stability comes from
+    // using high-quality hit tests and removing 2D smoothing artifacts.
     final point = MeasurementPoint(
       position: position,
       id: DateTime.now().millisecondsSinceEpoch.toString(),
+      anchorName: null, // ARKit plugin doesn't support custom anchors
     );
 
     _pendingPoints.add(point);
@@ -150,7 +136,7 @@ class ARMeasurementService {
 
   // Buffer for rolling average smoothing
   final List<vm.Vector3> _hitBuffer = [];
-  static const int _maxBufferSize = 5; 
+  static const int _maxBufferSize = 3; // Reduced from 5 for better accuracy 
 
   /// Get smoothed hit result for live tracking
   /// Uses rolling average of recent hits to eliminate depth flicker
@@ -200,13 +186,11 @@ class ARMeasurementService {
   /// Clear all AR nodes
   void clearAll() {
     _pendingPoints.clear();
-    // Note: ARKit plugin doesn't have a direct removeAll method
-    // You would need to track node names and remove them individually
-    // For simplicity, we'll rely on resetting the AR session
   }
 
   /// Dispose resources
   void dispose() {
+    clearAll();
     _controller?.dispose();
     _controller = null;
     _pendingPoints.clear();

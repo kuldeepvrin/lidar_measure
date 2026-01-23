@@ -5,10 +5,12 @@ class MeasurementPoint {
   final Vector3 position;
   final DateTime timestamp;
   final String id;
+  final String? anchorName; // ARKit anchor name for stable tracking
 
   MeasurementPoint({
     required this.position,
     required this.id,
+    this.anchorName,
   }) : timestamp = DateTime.now();
 
   @override

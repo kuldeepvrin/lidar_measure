@@ -33,10 +33,8 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
   // Timer for continuous distance updates
   Stream<void>? _trackingStream;
 
-  // Smoothing for projected lines
-  final Map<String, CoordinateSmoother> _lineSmoothers = {};
+  // Smoothing for live pending line only
   CoordinateSmoother? _pendingStartSmoother;
-  CoordinateSmoother? _pendingEndSmoother;
 
   @override
   void initState() {
@@ -124,7 +122,7 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
         _onLiveDistanceUpdate(distance);
       }
 
-      // 2. Project existing measurements
+      // 2. Project existing measurements (NO SMOOTHING - rock solid)
       final List<ProjectedLine> newProjectedLines = [];
       final List<Future<List<ProjectedLine>>> projectionFutures = _session.measurements.map((measurement) async {
         final List<ProjectedLine> measurementLines = [];
@@ -148,10 +146,15 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
           final List<ProjectedLine> pendingLines = [];
           final startPos = _arService!.firstPendingPoint!.position;
           
-          // Project the start point from 3D to 2D
-          final startScreen = await _arService!.projectPoint(startPos);
+          // Use a smoother for the pending line start point too
+          _pendingStartSmoother ??= CoordinateSmoother(smoothingFactor: 0.15); // Slightly responsive for live interaction
           
-          if (startScreen != null) {
+          // Project the start point from 3D to 2D
+          final rawStartScreen = await _arService!.projectPoint(startPos);
+          
+          if (rawStartScreen != null) {
+            final startScreen = _pendingStartSmoother!.smooth(rawStartScreen);
+            
             // CRITICAL FIX: Anchor the "end" of the live line to EXACT screen center
             // This eliminates crosshair drift and rotation lag for the active line
             final screenSize = MediaQuery.of(context).size;
@@ -188,6 +191,9 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
       _statusText = 'Tap to place first point';
       _liveDistance = null;
       _projectedLines = [];
+      
+      // Clear pending smoother
+      _pendingStartSmoother = null;
     });
     _arService?.clearAll();
   }
@@ -243,11 +249,10 @@ class _MeasurementScreenState extends State<MeasurementScreen> {
   Future<void> _capturePoint() async {
     if (_arService == null) return;
 
-    // Use smoothed position for final capture for maximum stability
-    final position = await _arService!.getSmoothedWorldPosition(0.5, 0.5);
+    // For final capture, use direct hit test for maximum accuracy
+    // (smoothing is only for live display, not for stored measurements)
+    final position = await _arService!.getWorldPosition(0.5, 0.5);
     if (position != null) {
-      _arService!.resetSmoothing(); // Reset for next measurement
-      
       // Add the point to the service
       _arService!.addPointFromVector(position);
 
